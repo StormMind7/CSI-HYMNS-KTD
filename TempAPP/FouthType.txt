@@ -1,0 +1,1543 @@
+import { useState, useEffect, useCallback, useRef } from "react";
+import { Document, Packer, Paragraph, TextRun, AlignmentType, PageBreak } from "docx";
+import { saveAs } from "file-saver";
+
+// ─────────────────────────────────────────────────────────────
+//  GLOBAL STYLES
+// ─────────────────────────────────────────────────────────────
+const GLOBAL_CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700;900&family=Crimson+Pro:ital,wght@0,300;0,400;0,600;1,300;1,400&family=JetBrains+Mono:wght@400;600&display=swap');
+
+:root {
+  --bg:         #080b14;
+  --bg2:        #0d1120;
+  --surface:    #111827;
+  --surface2:   #1a2236;
+  --surface3:   #243049;
+  --border:     #1e2d4a;
+  --border2:    #2a3f62;
+  --gold:       #c9922a;
+  --gold2:      #e8b84b;
+  --gold3:      #f5d27a;
+  --cream:      #f0e6d0;
+  --cream2:     #d4c4a0;
+  --muted:      #5a6a88;
+  --blue:       #3b6fd4;
+  --blue2:      #5a8fe8;
+  --red:        #c45a2a;
+  --green:      #2a9d6a;
+  --r:          10px;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--cream);
+  font-family: 'Crimson Pro', Georgia, serif;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+
+@keyframes fadeIn    { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
+@keyframes slideInL  { from{opacity:0;transform:translateX(-30px)} to{opacity:1;transform:translateX(0)} }
+@keyframes slideInR  { from{opacity:0;transform:translateX(30px)} to{opacity:1;transform:translateX(0)} }
+@keyframes glow      { 0%,100%{opacity:.6} 50%{opacity:1} }
+
+.cross-bg {
+  position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background:
+    radial-gradient(ellipse 60% 80% at 50% 0%, #1a2a4a44 0%, transparent 70%),
+    radial-gradient(ellipse 40% 40% at 80% 80%, #c9922a0a 0%, transparent 60%);
+}
+
+/* ── Chord + Lyric columns ── */
+.syl-col { display:inline-flex; flex-direction:column; align-items:center; padding:0 3px; }
+.syl-chord {
+  font-family:'JetBrains Mono',monospace; font-weight:700; color:var(--gold2);
+  display:flex; align-items:flex-end; justify-content:center;
+  white-space:nowrap; padding-bottom:1px;
+}
+.syl-lyric {
+  font-family:'Noto Sans Kannada','Noto Sans','Arial Unicode MS',sans-serif;
+  color:var(--cream); white-space:nowrap; text-align:center; line-height:1.4;
+}
+
+/* ── Admin chord slot ── */
+.chord-slot {
+  font-family:'JetBrains Mono',monospace; font-size:.68rem; font-weight:700;
+  color:var(--gold2); min-width:22px; min-height:20px;
+  display:flex; align-items:center; justify-content:center;
+  border-radius:3px; padding:1px 3px; cursor:text; white-space:nowrap;
+  transition:background .12s;
+}
+.chord-slot.has-chord { background:#c4922a22; border:1px solid #c4922a66; }
+.chord-slot.focused   { background:#c4922a18; border:1px solid var(--gold); }
+
+.syl-text-editor {
+  font-size:1.1rem; color:var(--cream); padding:0 1px;
+  white-space:nowrap; line-height:1.6; transition:color .12s;
+  font-family:'Noto Sans Kannada','Noto Sans',serif;
+}
+
+.drag-handle { cursor:grab; opacity:.4; transition:opacity .15s; }
+.drag-handle:hover { opacity:1; }
+`;
+
+function injectStyles() {
+  if (document.getElementById("csi-global")) return;
+  const s = document.createElement("style");
+  s.id = "csi-global";
+  s.textContent = GLOBAL_CSS;
+  document.head.appendChild(s);
+}
+
+// ─────────────────────────────────────────────────────────────
+//  CONSTANTS
+// ─────────────────────────────────────────────────────────────
+const CHROMATIC = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+const PALETTES = {
+  standard: ["D","G","A","E","B","C","F"],
+  minor:    ["D","Dm","G","Gm","A","Am","E","Em","B","Bm","C","Cm","F","Fm"],
+  extended: ["D","D7","Dsus4","G","G7","A","A7","Am","E","E7","Em","B","B7","C","Cmaj7","F","Fm"],
+};
+const DEMO_HYMN = {
+  id: "demo1", number: 1, title: "Hymns of Praise", key: "D",
+  lines: [
+    [{syl:"ಭೂ",wordBreak:false},{syl:"ಲೋ",wordBreak:false},{syl:"ಕ",wordBreak:false},{syl:"ವೆ",wordBreak:false},{syl:"ಲ್ಲಾ",wordBreak:false},{syl:"ಕ",wordBreak:true},{syl:"ರ್ತ",wordBreak:false},{syl:"ನ",wordBreak:false},{syl:"ಗೆ",wordBreak:false}],
+    [{syl:"ಉ",wordBreak:false},{syl:"ತ್ಸಾ",wordBreak:false},{syl:"ಹ",wordBreak:false},{syl:"ಧ್ವ",wordBreak:false},{syl:"ನಿ",wordBreak:false},{syl:"ಎ",wordBreak:true},{syl:"ತ್ತ",wordBreak:false},{syl:"ಲಿ",wordBreak:false}],
+    [],
+    [{syl:"ಸಂ",wordBreak:false},{syl:"ತೋ",wordBreak:false},{syl:"ಷ",wordBreak:false},{syl:"ಹ",wordBreak:true},{syl:"ರ್ಷ",wordBreak:false},{syl:"ದೊ",wordBreak:false},{syl:"ಡ",wordBreak:false},{syl:"ನೆ",wordBreak:false}],
+    [{syl:"ಸ್ತೋ",wordBreak:false},{syl:"ತ್ರ",wordBreak:false},{syl:"ದಿ",wordBreak:false},{syl:"ಸೇ",wordBreak:true},{syl:"ವೆ",wordBreak:false},{syl:"ಮಾ",wordBreak:false},{syl:"ಡ",wordBreak:false},{syl:"ಲಿ",wordBreak:false}],
+  ],
+  chords: [
+    ["D","D","G","","D","A","","","D"],
+    ["","","","","","","",""],
+    [],
+    ["G","","","A","","","","D"],
+    ["","","","","","","",""],
+  ],
+};
+
+// ─────────────────────────────────────────────────────────────
+//  UTILITIES
+// ─────────────────────────────────────────────────────────────
+function uid() { return Math.random().toString(36).slice(2, 10); }
+
+function transposeChord(chord, steps) {
+  const m = chord.match(/^([A-G][#b]?)(.*)$/);
+  if (!m) return chord;
+  let root = m[1]
+    .replace("Db","C#").replace("Eb","D#").replace("Fb","E")
+    .replace("Gb","F#").replace("Ab","G#").replace("Bb","A#").replace("Cb","B");
+  const idx = CHROMATIC.indexOf(root);
+  if (idx < 0) return chord;
+  return CHROMATIC[(idx + steps + 12) % 12] + m[2];
+}
+
+function sortHymns(hymns) {
+  return [...hymns].sort((a, b) => {
+    if (a.number !== b.number) return a.number - b.number;
+    return (a.key || "").localeCompare(b.key || "");
+  });
+}
+
+function isDuplicate(existing, incoming) {
+  return existing.number === incoming.number &&
+    (existing.key || "D").trim().toUpperCase() === (incoming.key || "D").trim().toUpperCase();
+}
+
+// Ensure a hymn always has a valid chords array matching its lines
+function ensureChords(hymn) {
+  if (!hymn) return hymn;
+  const lines = hymn.lines || [];
+  const existingChords = hymn.chords || [];
+  const chords = lines.map((line, li) => {
+    const lineLen = (line || []).length;
+    const existing = existingChords[li];
+    if (!line || line.length === 0) return [];
+    if (Array.isArray(existing) && existing.length === lineLen) return existing;
+    // Pad or trim to match line length
+    const base = Array.isArray(existing) ? existing : [];
+    return Array.from({ length: lineLen }, (_, si) => base[si] || "");
+  });
+  return { ...hymn, chords };
+}
+
+const ADMIN_PIN = "1234";
+
+function parseHymnJSONObj(data) {
+  const lines = (data.lines || []).map(line => {
+    if (!line || line.length === 0) return [];
+    if (typeof line === "string") return line.split(" ").filter(Boolean).map((s,i)=>({syl:s,wordBreak:i===0}));
+    let syls = [];
+    line.forEach((group, gi) => {
+      String(group).split(" ").filter(Boolean).forEach((s,si) =>
+        syls.push({ syl: s, wordBreak: si === 0 && gi > 0 })
+      );
+    });
+    return syls;
+  });
+  return ensureChords({
+    id: uid(),
+    number: data.number || 1,
+    title: data.title || "Untitled",
+    key: (data.key || "D").toUpperCase(),
+    lines,
+    chords: (data.chords || []),
+  });
+}
+
+function loadStorage(key, fallback) {
+  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
+  catch { return fallback; }
+}
+function saveStorage(key, val) {
+  try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
+}
+
+// ─────────────────────────────────────────────────────────────
+//  PDF EXPORT — opens new window, writes HTML, triggers print
+// ─────────────────────────────────────────────────────────────
+function buildPrintHTML(hymns_, indices, lyricSize, chordSize, lineGap) {
+  const buildHymn = (h) => {
+    const safe = ensureChords(h);
+    const titleSize = Math.round(lyricSize * 0.85);
+    const chordH = Math.round(chordSize * 2.2);
+    const wordGap = Math.round(lyricSize * 1.1);
+    let html = `<div class="hymn-block">`;
+    html += `<div class="hymn-title">${safe.number}. ${safe.title} <span class="hymn-key">(Key: ${safe.key||"D"})</span></div>`;
+    safe.lines.forEach((line, li) => {
+      if (!line || !line.length) { html += `<div style="height:${lineGap*2}px;"></div>`; return; }
+      html += `<div class="line-row">`;
+      line.forEach((sylObj, si) => {
+        const syl = typeof sylObj==="string" ? sylObj : (sylObj?.syl || "");
+        const isBreak = typeof sylObj==="object" ? (sylObj?.wordBreak || false) : false;
+        const chord = (safe.chords[li] && safe.chords[li][si]) || "";
+        if (isBreak) {
+          html += `<div class="word-gap" style="width:${wordGap}px;"><div style="height:${chordH}px;"></div><div>&nbsp;</div></div>`;
+        }
+        html += `<div class="syl-col">`;
+        html += `<div class="chord" style="min-height:${chordH}px;">${chord}</div>`;
+        html += `<div class="lyric">${syl}</div>`;
+        html += `</div>`;
+      });
+      html += `</div>`;
+    });
+    html += `</div>`;
+    return html;
+  };
+
+  let body = "";
+  indices.forEach((idx, i) => {
+    const pb = i > 0 ? ' style="page-break-before:always;"' : '';
+    body += `<div class="page"${pb}>${buildHymn(hymns_[idx])}</div>`;
+  });
+
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700&family=Noto+Sans+Kannada:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  @page { margin: 14mm 18mm; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 0; background: #fff; font-family: Georgia, serif; }
+  .page { display: flex; flex-direction: column; align-items: center; padding: 8mm 0; width: 100%; }
+  .hymn-block { width: 100%; display: flex; flex-direction: column; align-items: center; }
+  .hymn-title {
+    text-align: center; margin-bottom: ${lineGap * 2}px;
+    font-family: 'Cinzel', Georgia, serif; font-size: ${titleSize}pt; font-weight: 700; color: #5a3000;
+  }
+  .hymn-key { font-family: 'Courier New', monospace; font-size: ${Math.round(titleSize * .62)}pt; color: #8a5500; }
+  .line-row {
+    display: flex; flex-direction: row; flex-wrap: wrap;
+    align-items: flex-end; justify-content: center;
+    margin-bottom: ${lineGap}px;
+  }
+  .word-gap { display: inline-flex; flex-direction: column; align-items: center; }
+  .syl-col { display: inline-flex; flex-direction: column; align-items: center; padding: 0 ${Math.round(lyricSize * .15)}px; }
+  .chord {
+    font-family: 'Courier New', monospace; font-size: ${chordSize}pt; font-weight: 700;
+    color: #8B4500; display: flex; align-items: flex-end; justify-content: center;
+    white-space: nowrap; padding-bottom: 1px; min-width: 12px;
+  }
+  .lyric {
+    font-family: 'Noto Sans Kannada', 'Arial Unicode MS', Georgia, sans-serif;
+    font-size: ${lyricSize}pt; color: #111; line-height: 1.4; white-space: nowrap;
+  }
+  @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+</style>
+</head><body>${body}
+<script>
+  // Wait for Google Fonts to load then print
+  document.fonts.ready.then(function() {
+    setTimeout(function() { window.print(); }, 600);
+  });
+<\/script>
+</body></html>`;
+}
+
+function doPDFExport(hymns_, indices, lyricSize, chordSize, lineGap) {
+  const html = buildPrintHTML(hymns_, indices, lyricSize, chordSize, lineGap);
+  const win = window.open("", "_blank", "width=900,height=700");
+  if (!win) { alert("Please allow pop-ups for this site to print/save PDF."); return; }
+  win.document.open();
+  win.document.write(html);
+  win.document.close();
+}
+
+// ─────────────────────────────────────────────────────────────
+//  DOCX EXPORT — real Word document via docx.js
+// ─────────────────────────────────────────────────────────────
+async function doDOCXExport(hymns_, indices) {
+  const children = [];
+
+  indices.forEach((idx, pageIdx) => {
+    const h = ensureChords(hymns_[idx]);
+
+    // Page break before each hymn (except first)
+    if (pageIdx > 0) {
+      children.push(new Paragraph({ children: [new PageBreak()] }));
+    }
+
+    // Title
+    children.push(new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 200 },
+      children: [
+        new TextRun({ text: `${h.number}. ${h.title}`, bold: true, size: 32, font: "Georgia" }),
+        new TextRun({ text: `  (Key: ${h.key || "D"})`, size: 20, color: "8B5500", font: "Courier New" }),
+      ],
+    }));
+
+    // Lines
+    h.lines.forEach((line, li) => {
+      if (!line || !line.length) {
+        children.push(new Paragraph({ text: "", spacing: { after: 160 } }));
+        return;
+      }
+
+      // Build chord line and lyric line as separate text paragraphs
+      // We interleave chord + syllable using tabbed approach
+      let chordText = "";
+      let lyricText = "";
+      line.forEach((sylObj, si) => {
+        const syl = typeof sylObj === "string" ? sylObj : (sylObj?.syl || "");
+        const isBreak = typeof sylObj === "object" ? (sylObj?.wordBreak || false) : false;
+        const chord = (h.chords[li] && h.chords[li][si]) || "";
+        const colWidth = Math.max(syl.length, chord.length, 2) + 1;
+        if (isBreak) {
+          chordText += " ";
+          lyricText += " ";
+        }
+        chordText += chord.padEnd(colWidth);
+        lyricText += syl.padEnd(colWidth);
+      });
+
+      children.push(new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 0 },
+        children: [new TextRun({
+          text: chordText.trimEnd(),
+          font: "Courier New", size: 20, bold: true, color: "8B4500",
+        })],
+      }));
+      children.push(new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 160 },
+        children: [new TextRun({
+          text: lyricText.trimEnd(),
+          font: "Arial Unicode MS", size: 26,
+        })],
+      }));
+    });
+  });
+
+  const doc = new Document({
+    sections: [{ children }],
+    styles: {
+      default: {
+        document: { run: { font: "Georgia", size: 24 } },
+      },
+    },
+  });
+
+  const blob = await Packer.toBlob(doc);
+  saveAs(blob, "csi-hymns.docx");
+}
+
+// ─────────────────────────────────────────────────────────────
+//  SHARED UI ATOMS
+// ─────────────────────────────────────────────────────────────
+const Btn = ({ children, onClick, variant="default", small, style={}, disabled }) => {
+  const base = {
+    fontFamily:"'JetBrains Mono',monospace", fontWeight:600,
+    fontSize: small ? ".68rem" : ".75rem",
+    padding: small ? "3px 9px" : "6px 14px",
+    borderRadius: "var(--r)", cursor: disabled ? "not-allowed" : "pointer",
+    border:"1px solid transparent", transition:"all .15s", whiteSpace:"nowrap",
+    opacity: disabled ? .5 : 1, ...style,
+  };
+  const variants = {
+    default:  { background:"var(--surface2)", borderColor:"var(--border2)", color:"var(--cream2)" },
+    primary:  { background:"var(--gold)", borderColor:"var(--gold)", color:"#000" },
+    ghost:    { background:"transparent", borderColor:"transparent", color:"var(--muted)" },
+    danger:   { background:"transparent", borderColor:"transparent", color:"var(--red)" },
+    blue:     { background:"var(--blue)", borderColor:"var(--blue)", color:"#fff" },
+    green:    { background:"var(--green)", borderColor:"var(--green)", color:"#fff" },
+  };
+  return (
+    <button onClick={disabled ? undefined : onClick} style={{...base,...variants[variant]}}>
+      {children}
+    </button>
+  );
+};
+
+const Modal = ({ open, onClose, title, children, footer, wide }) => {
+  if (!open) return null;
+  return (
+    <div onClick={e => e.target === e.currentTarget && onClose()}
+      style={{position:"fixed",inset:0,background:"#000c",display:"flex",alignItems:"center",justifyContent:"center",zIndex:300,backdropFilter:"blur(4px)"}}>
+      <div style={{
+        background:"var(--surface)",border:"1px solid var(--border2)",borderRadius:14,
+        width: wide ? 700 : 560, maxWidth:"96vw", maxHeight:"90vh",
+        display:"flex",flexDirection:"column",boxShadow:"0 32px 80px #0009",
+        animation:"fadeIn .2s ease",
+      }}>
+        <div style={{padding:"15px 20px",borderBottom:"1px solid var(--border)",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span style={{fontFamily:"'Cinzel',serif",fontSize:".88rem",color:"var(--gold2)",letterSpacing:".06em"}}>{title}</span>
+          <Btn onClick={onClose} variant="ghost" small>✕</Btn>
+        </div>
+        <div style={{padding:18,overflowY:"auto",flex:1}}>{children}</div>
+        {footer && <div style={{padding:"12px 18px",borderTop:"1px solid var(--border)",display:"flex",justifyContent:"flex-end",gap:8}}>{footer}</div>}
+      </div>
+    </div>
+  );
+};
+
+const SectionLabel = ({ children }) => (
+  <div style={{fontFamily:"'Cinzel',serif",fontSize:".6rem",letterSpacing:".12em",color:"var(--muted)",marginBottom:8,display:"flex",alignItems:"center",gap:8}}>
+    {children}
+    <span style={{flex:1,height:1,background:"var(--border)"}}/>
+  </div>
+);
+
+// ─────────────────────────────────────────────────────────────
+//  HYMN VIEWER — chord above syllable
+// ─────────────────────────────────────────────────────────────
+const HymnViewer = ({ hymn, lyricSize = 22, chordSize = 15, lineGap = 18 }) => {
+  const safe = ensureChords(hymn);
+  if (!safe) return null;
+  const chordH = Math.round(chordSize * 1.8);
+  const wordGap = Math.round(lyricSize * 0.9);
+  return (
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center",width:"100%"}}>
+      {safe.lines.map((line, li) => {
+        if (!line || !line.length) return <div key={li} style={{height:lineGap*2}}/>;
+        return (
+          <div key={li} style={{display:"flex",flexDirection:"row",flexWrap:"wrap",alignItems:"flex-end",justifyContent:"center",marginBottom:lineGap}}>
+            {line.map((sylObj, si) => {
+              const syl = typeof sylObj==="string" ? sylObj : (sylObj?.syl || "");
+              const isBreak = typeof sylObj==="object" ? (sylObj?.wordBreak || false) : false;
+              const chord = (safe.chords[li] && safe.chords[li][si]) || "";
+              return (
+                <span key={si} style={{display:"inline-flex",flexDirection:"row"}}>
+                  {isBreak && (
+                    <span style={{display:"inline-flex",flexDirection:"column",alignItems:"center",width:wordGap}}>
+                      <span style={{height:chordH}}/>
+                      <span style={{fontSize:lyricSize,lineHeight:1.4}}>&nbsp;</span>
+                    </span>
+                  )}
+                  <span className="syl-col">
+                    <span className="syl-chord" style={{fontSize:chordSize,minHeight:chordH}}>{chord}</span>
+                    <span className="syl-lyric" style={{fontSize:lyricSize}}>{syl}</span>
+                  </span>
+                </span>
+              );
+            })}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+//  LOGIN SCREEN
+// ─────────────────────────────────────────────────────────────
+const LoginScreen = ({ onLogin }) => {
+  const [role, setRole] = useState("user");
+  const [pin, setPin] = useState("");
+  const [err, setErr] = useState("");
+
+  const handle = () => {
+    if (role === "admin" && pin !== ADMIN_PIN) { setErr("Incorrect PIN"); return; }
+    onLogin(role);
+  };
+
+  return (
+    <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"var(--bg)",position:"relative",overflow:"hidden"}}>
+      <div className="cross-bg"/>
+      <div style={{position:"absolute",top:0,left:"50%",transform:"translateX(-50%)",width:2,height:"40vh",background:"linear-gradient(to bottom,#c9922a44,transparent)",pointerEvents:"none"}}/>
+      <div style={{position:"relative",zIndex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:32,animation:"fadeIn .6s ease"}}>
+        <div style={{textAlign:"center"}}>
+          <div style={{fontSize:"2.8rem",marginBottom:8,animation:"glow 3s infinite"}}>✝</div>
+          <h1 style={{fontFamily:"'Cinzel',serif",fontSize:"1.9rem",fontWeight:900,color:"var(--gold2)",letterSpacing:".1em",lineHeight:1.1}}>CSI HYMNS</h1>
+          <p style={{color:"var(--muted)",fontSize:".82rem",marginTop:6,letterSpacing:".08em",fontFamily:"'Crimson Pro',serif"}}>Sacred Songs & Chord Editor</p>
+        </div>
+        <div style={{background:"var(--surface)",border:"1px solid var(--border2)",borderRadius:16,padding:"32px 36px",width:340,boxShadow:"0 24px 60px #0009"}}>
+          <SectionLabel>SIGN IN AS</SectionLabel>
+          <div style={{display:"flex",gap:10,marginBottom:22}}>
+            {["user","admin"].map(r => (
+              <button key={r} onClick={() => { setRole(r); setPin(""); setErr(""); }} style={{
+                flex:1, padding:"10px 0", borderRadius:"var(--r)", cursor:"pointer",
+                fontFamily:"'Cinzel',serif", fontSize:".72rem", letterSpacing:".08em",
+                fontWeight:700, border:"1px solid", transition:"all .15s",
+                background: role===r ? "var(--gold)" : "var(--surface2)",
+                borderColor: role===r ? "var(--gold)" : "var(--border2)",
+                color: role===r ? "#000" : "var(--cream2)",
+              }}>
+                {r === "user" ? "👤 User" : "🛡 Admin"}
+              </button>
+            ))}
+          </div>
+          {role === "admin" && (
+            <div style={{marginBottom:18}}>
+              <label style={{display:"block",fontSize:".7rem",color:"var(--muted)",fontFamily:"'Cinzel',serif",letterSpacing:".08em",marginBottom:6}}>ADMIN PIN</label>
+              <input
+                type="password" value={pin} placeholder="Enter Admin PIN"
+                onChange={e => { setPin(e.target.value); setErr(""); }}
+                onKeyDown={e => e.key==="Enter" && handle()}
+                style={{width:"100%",background:"var(--bg2)",border:`1px solid ${err?"var(--red)":"var(--border2)"}`,color:"var(--cream)",padding:"9px 12px",borderRadius:"var(--r)",fontFamily:"'JetBrains Mono',monospace",fontSize:".8rem",outline:"none"}}
+              />
+              {err && <p style={{color:"var(--red)",fontSize:".7rem",marginTop:5}}>{err}</p>}
+            </div>
+          )}
+          <Btn onClick={handle} variant="primary" style={{width:"100%",padding:"10px 0",fontSize:".8rem",letterSpacing:".06em"}}>
+            {role === "admin" ? "Enter Admin Dashboard →" : "Enter as User →"}
+          </Btn>
+          {role === "user" && <p style={{textAlign:"center",fontSize:".7rem",color:"var(--muted)",marginTop:12}}>No password needed for users</p>}
+        </div>
+        <p style={{color:"var(--muted)",fontSize:".68rem",letterSpacing:".06em"}}>Church of South India — Hymn Management</p>
+      </div>
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+//  ADMIN — EDITABLE KEY FIELD
+// ─────────────────────────────────────────────────────────────
+const EditableKeyField = ({ value, onChange }) => {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(value || "D");
+  const ref = useRef();
+
+  useEffect(() => { setVal(value || "D"); }, [value]);
+  useEffect(() => { if (editing && ref.current) { ref.current.focus(); ref.current.select(); } }, [editing]);
+
+  const commit = () => {
+    const cleaned = val.trim().toUpperCase() || "D";
+    setVal(cleaned);
+    onChange(cleaned);
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <input
+        ref={ref}
+        value={val}
+        onChange={e => setVal(e.target.value.toUpperCase())}
+        onKeyDown={e => {
+          if (e.key === "Enter" || e.key === "Escape" || e.key === "Tab") {
+            e.preventDefault(); commit();
+          }
+        }}
+        onBlur={commit}
+        maxLength={4}
+        style={{
+          background:"var(--bg2)", border:"1.5px solid var(--gold)",
+          color:"var(--gold2)", fontFamily:"'JetBrains Mono',monospace",
+          fontSize:".78rem", fontWeight:700, textAlign:"center",
+          borderRadius:6, padding:"3px 8px", outline:"none", width:70,
+          textTransform:"uppercase",
+        }}
+      />
+    );
+  }
+
+  return (
+    <span
+      onClick={() => setEditing(true)}
+      title="Click to edit key"
+      style={{
+        fontFamily:"'JetBrains Mono',monospace", fontSize:".78rem", fontWeight:700,
+        padding:"3px 12px", borderRadius:20,
+        background:"#c4922a22", border:"1.5px dashed var(--gold)",
+        color:"var(--gold2)", cursor:"pointer", whiteSpace:"nowrap",
+        transition:"all .14s", userSelect:"none",
+        display:"inline-flex", alignItems:"center", gap:5,
+      }}
+    >
+      ✎ Key: {val}
+    </span>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+//  ADMIN — CHORD INPUT INLINE
+// ─────────────────────────────────────────────────────────────
+const ChordInputCell = ({ chord, onCommit, onMove }) => {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(chord);
+  const ref = useRef();
+
+  useEffect(() => { setVal(chord); }, [chord]);
+  useEffect(() => { if (editing && ref.current) { ref.current.focus(); ref.current.select(); } }, [editing]);
+
+  return (
+    <div className={`chord-slot${chord ? " has-chord" : ""}${editing ? " focused" : ""}`}
+      onClick={() => setEditing(true)}
+      style={{position:"relative", minWidth:22, minHeight:20}}>
+      {!editing && chord}
+      {editing && (
+        <input ref={ref} value={val}
+          onChange={e => setVal(e.target.value.toUpperCase())}
+          onKeyDown={e => {
+            if (e.key==="Enter"||e.key==="ArrowRight"||e.key==="Tab") { e.preventDefault(); onCommit(val); onMove(1); setEditing(false); }
+            else if (e.key==="ArrowLeft") { e.preventDefault(); onCommit(val); onMove(-1); setEditing(false); }
+            else if (e.key==="Escape") { onCommit(val); setEditing(false); }
+            else if ((e.key==="Delete"||e.key==="Backspace") && val==="") { onCommit(""); setEditing(false); }
+          }}
+          onBlur={() => { onCommit(val); setEditing(false); }}
+          style={{
+            position:"absolute",top:-2,left:"50%",transform:"translateX(-50%)",
+            minWidth:46,background:"var(--bg)",border:"1.5px solid var(--gold)",
+            borderRadius:4,color:"var(--gold2)",fontFamily:"'JetBrains Mono',monospace",
+            fontSize:".68rem",fontWeight:600,textAlign:"center",outline:"none",
+            padding:"2px 4px",zIndex:50,boxShadow:"0 4px 16px #0008",
+          }}
+          maxLength={12}
+        />
+      )}
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+//  ADMIN — SHEET EDITOR
+// ─────────────────────────────────────────────────────────────
+const SheetEditor = ({ hymn, onUpdate }) => {
+  const safe = ensureChords(hymn);
+
+  const setChord = (li, si, val) => {
+    const next = {
+      ...safe,
+      chords: safe.chords.map((r,ri) => ri===li ? r.map((c,ci) => ci===si ? val : c) : r)
+    };
+    onUpdate(next);
+  };
+
+  const moveFocus = useCallback((li, si, dir) => {
+    const lines = safe.lines;
+    let l = li, s = si + dir;
+    while (l >= 0 && l < lines.length) {
+      const line = lines[l];
+      if (!line||!line.length) { l += dir; s = dir>0 ? 0 : (lines[l]?.length||1)-1; continue; }
+      if (s >= 0 && s < line.length) return;
+      l += dir;
+      if (l < 0 || l >= lines.length) break;
+      s = dir > 0 ? 0 : (lines[l]?.length||1)-1;
+    }
+  }, [safe.lines]);
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center",width:"100%"}}>
+      {safe.lines.map((line, li) => {
+        if (!line||!line.length) return <div key={li} style={{height:20}}/>;
+        return (
+          <div key={li} style={{display:"flex",flexWrap:"wrap",alignItems:"flex-end",justifyContent:"center",marginBottom:4,gap:"0 2px"}}>
+            {line.map((sylObj, si) => {
+              const syl = typeof sylObj==="string" ? sylObj : (sylObj?.syl || "");
+              const isBreak = typeof sylObj==="object" ? (sylObj?.wordBreak || false) : false;
+              const chord = (safe.chords[li] && safe.chords[li][si]) || "";
+              return (
+                <span key={si} style={{display:"inline-flex",flexDirection:"row"}}>
+                  {isBreak && <span style={{display:"inline-block",width:13}}/>}
+                  <span style={{display:"inline-flex",flexDirection:"column",alignItems:"center",cursor:"pointer"}}>
+                    <ChordInputCell chord={chord}
+                      onCommit={v => setChord(li,si,v)}
+                      onMove={dir => moveFocus(li,si,dir)}
+                    />
+                    <span className="syl-text-editor">{syl}</span>
+                  </span>
+                </span>
+              );
+            })}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+//  ADMIN — EXPORT MODAL
+// ─────────────────────────────────────────────────────────────
+const ExportModal = ({ open, onClose, hymns, currentIdx, mode }) => {
+  const [selected, setSelected] = useState(new Set([currentIdx]));
+  const [lyricSize, setLyricSize] = useState(16);
+  const [chordSize, setChordSize] = useState(11);
+  const [lineGap, setLineGap] = useState(14);
+  const [exporting, setExporting] = useState(false);
+
+  useEffect(() => { if (open) setSelected(new Set([currentIdx])); }, [open, currentIdx]);
+
+  const toggle = (i) => setSelected(s => { const n=new Set(s); n.has(i)?n.delete(i):n.add(i); return n; });
+
+  const doExport = async () => {
+    const indices = [...selected].sort((a,b)=>a-b);
+    if (!indices.length) { alert("Select at least one hymn."); return; }
+    setExporting(true);
+    try {
+      if (mode === "pdf") {
+        doPDFExport(hymns, indices, lyricSize, chordSize, lineGap);
+        onClose();
+      } else {
+        await doDOCXExport(hymns, indices);
+        onClose();
+      }
+    } catch(e) {
+      alert("Export failed: " + e.message);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  return (
+    <Modal open={open} onClose={onClose} title={mode==="pdf"?"🖨 Export PDF":"📄 Export DOCX"} wide
+      footer={<>
+        <Btn onClick={onClose}>Cancel</Btn>
+        <Btn onClick={doExport} variant="primary" disabled={exporting}>
+          {exporting ? "⏳ Preparing…" : mode==="pdf" ? "🖨 Open Print Dialog" : "📄 Download .docx"}
+        </Btn>
+      </>}>
+
+      <SectionLabel>① SELECT HYMNS</SectionLabel>
+      <div style={{display:"flex",gap:6,marginBottom:8}}>
+        <Btn small onClick={() => setSelected(new Set(hymns.map((_,i)=>i)))}>✔ All</Btn>
+        <Btn small onClick={() => setSelected(new Set())}>✕ None</Btn>
+        <Btn small onClick={() => setSelected(new Set([currentIdx]))}>☛ Current</Btn>
+      </div>
+      <div style={{maxHeight:160,overflowY:"auto",background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:"var(--r)",padding:7,marginBottom:18}}>
+        {hymns.map((h,i) => (
+          <div key={h.id} onClick={() => toggle(i)}
+            style={{display:"flex",alignItems:"center",gap:9,padding:"6px 9px",borderRadius:6,cursor:"pointer",marginBottom:3,
+              background:selected.has(i)?"#c4922a18":"transparent",
+              border:`1px solid ${selected.has(i)?"var(--gold)":"transparent"}`}}>
+            <input type="checkbox" checked={selected.has(i)} onChange={() => toggle(i)}
+              onClick={e=>e.stopPropagation()} style={{accentColor:"var(--gold)",width:14,height:14}}/>
+            <span style={{fontFamily:"'Cinzel',serif",fontSize:".63rem",color:"var(--gold)",minWidth:40}}>#{h.number}</span>
+            <span style={{fontSize:".82rem",flex:1}}>{h.title}</span>
+            <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:".6rem",color:"var(--muted)"}}>Key: {h.key||"D"}</span>
+          </div>
+        ))}
+      </div>
+
+      {mode === "pdf" && (
+        <>
+          <SectionLabel>② FONT & SPACING</SectionLabel>
+          {[["Lyric size (pt)", lyricSize, setLyricSize, 10, 40],
+            ["Chord size (pt)", chordSize, setChordSize, 8, 30],
+            ["Line gap (px)", lineGap, setLineGap, 6, 40]].map(([label,val,set,min,max]) => (
+            <div key={label} style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+              <label style={{fontSize:".72rem",color:"var(--muted)",minWidth:130}}>{label}</label>
+              <input type="range" min={min} max={max} value={val} onChange={e=>set(+e.target.value)}
+                style={{flex:1,accentColor:"var(--gold)"}}/>
+              <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:".72rem",color:"var(--gold2)",minWidth:28,textAlign:"right"}}>{val}</span>
+            </div>
+          ))}
+          <div style={{background:"var(--bg2)",borderRadius:8,padding:10,marginTop:6,fontSize:".68rem",color:"var(--muted)"}}>
+            💡 A new window will open — use your browser's <b style={{color:"var(--cream)"}}>Print</b> dialog to save as PDF (choose "Save as PDF" as printer).
+          </div>
+        </>
+      )}
+
+      {mode === "docx" && (
+        <div style={{background:"var(--bg2)",borderRadius:8,padding:10,marginTop:6,fontSize:".68rem",color:"var(--muted)"}}>
+          💡 A <b style={{color:"var(--cream)"}}>.docx</b> file will be downloaded. You can open it in Microsoft Word, Google Docs, or LibreOffice.
+        </div>
+      )}
+
+      <p style={{fontSize:".7rem",color:"var(--muted)",marginTop:10}}>
+        Selected: <b style={{color:"var(--gold)"}}>{selected.size}</b> hymn(s)
+      </p>
+    </Modal>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+//  ADMIN DASHBOARD
+// ─────────────────────────────────────────────────────────────
+const AdminDashboard = ({ hymns, setHymns, onLogout }) => {
+  const [currentIdx, setCurrentIdx] = useState(hymns.length > 0 ? 0 : -1);
+  const [palette, setPalette] = useState("standard");
+  const [importText, setImportText] = useState("");
+  const [showImport, setShowImport] = useState(false);
+  const [showExport, setShowExport] = useState(false);
+  const [exportMode, setExportMode] = useState("pdf");
+  const [showSettings, setShowSettings] = useState(false);
+  const [lyricFontSize, setLyricFontSize] = useState(18);
+  const [dupQueue, setDupQueue] = useState([]);
+  const [dupQueueIdx, setDupQueueIdx] = useState(0);
+  const [pendingNewHymns, setPendingNewHymns] = useState([]);
+
+  const hymn = currentIdx >= 0 ? ensureChords(hymns[currentIdx]) : null;
+
+  const saveAll = (list) => {
+    const sorted = sortHymns(list);
+    setHymns(sorted);
+    saveStorage("csiHymns", sorted);
+    return sorted;
+  };
+
+  const save = (updated) => {
+    const fixed = ensureChords(updated);
+    const next = hymns.map((h,i) => i===currentIdx ? fixed : h);
+    const sorted = saveAll(next);
+    const newIdx = sorted.findIndex(h => h.id === fixed.id);
+    if (newIdx !== currentIdx) setCurrentIdx(newIdx);
+  };
+
+  const newHymn = () => {
+    const h = ensureChords({ id:uid(), number:hymns.length+1, title:"New Hymn", key:"D", lines:[], chords:[] });
+    const sorted = saveAll([...hymns, h]);
+    setCurrentIdx(sorted.findIndex(x => x.id === h.id));
+  };
+
+  const deleteHymn = () => {
+    if (currentIdx<0||!hymns.length) return;
+    if (!confirm("Delete this hymn?")) return;
+    const next = hymns.filter((_,i)=>i!==currentIdx);
+    saveAll(next);
+    setCurrentIdx(Math.max(0, currentIdx-1));
+  };
+
+  const doTranspose = (steps) => {
+    if (!hymn) return;
+    const next = {
+      ...hymn,
+      key: transposeChord(hymn.key||"D", steps),
+      chords: hymn.chords.map(row => (row||[]).map(c => c ? transposeChord(c,steps) : "")),
+    };
+    save(next);
+  };
+
+  const clearChords = () => {
+    if (!hymn || !confirm("Clear all chords?")) return;
+    save({ ...hymn, chords: hymn.lines.map(l=>l?l.map(()=>""):[]) });
+  };
+
+  const doImport = () => {
+    try {
+      const raw = JSON.parse(importText.trim());
+      const incoming = (Array.isArray(raw) ? raw : [raw]).map(parseHymnJSONObj);
+      const duplicates = [];
+      const fresh = [];
+      incoming.forEach(h => {
+        const existingIdx = hymns.findIndex(e => isDuplicate(e, h));
+        if (existingIdx !== -1) duplicates.push({ incoming: h, existingIdx });
+        else fresh.push(h);
+      });
+      if (duplicates.length > 0) {
+        saveAll([...hymns, ...fresh]);
+        setPendingNewHymns(fresh);
+        setDupQueue(duplicates);
+        setDupQueueIdx(0);
+        setImportText(""); setShowImport(false);
+      } else {
+        const sorted = saveAll([...hymns, ...incoming]);
+        setCurrentIdx(sorted.length - 1);
+        setImportText(""); setShowImport(false);
+      }
+    } catch(e) { alert("Invalid JSON: " + e.message); }
+  };
+
+  const resolveDup = (action) => {
+    const { incoming, existingIdx } = dupQueue[dupQueueIdx];
+    let current = [...hymns];
+    if (action === "replace") {
+      current[existingIdx] = ensureChords({ ...incoming, id: current[existingIdx].id });
+      saveAll(current);
+    } else if (action === "keep_both") {
+      current = [...current, ensureChords({ ...incoming, id: uid() })];
+      saveAll(current);
+    }
+    const next = dupQueueIdx + 1;
+    if (next >= dupQueue.length) {
+      setDupQueue([]); setDupQueueIdx(0); setPendingNewHymns([]);
+      setCurrentIdx(hymns.length > 0 ? hymns.length - 1 : 0);
+    } else {
+      setDupQueueIdx(next);
+    }
+  };
+
+  const chips = PALETTES[palette];
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",height:"100vh",background:"var(--bg)"}}>
+      <div className="cross-bg"/>
+
+      {/* ── Top Bar ── */}
+      <header style={{
+        background:"var(--surface)", borderBottom:"1px solid var(--border)",
+        padding:"0 16px", height:52, display:"flex", alignItems:"center",
+        gap:12, flexShrink:0, position:"sticky", top:0, zIndex:100,
+        boxShadow:"0 2px 20px #0008",
+      }}>
+        <span style={{fontFamily:"'Cinzel',serif",fontSize:".95rem",fontWeight:900,color:"var(--gold2)",letterSpacing:".08em",whiteSpace:"nowrap"}}>✝ CSI HYMNS</span>
+        <span style={{width:1,height:26,background:"var(--border)"}}/>
+        <div style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap",flex:1}}>
+          <Btn small onClick={() => setShowImport(true)}>📥 Import</Btn>
+          <Btn small onClick={newHymn}>＋ New</Btn>
+          <span style={{width:1,height:20,background:"var(--border)",margin:"0 2px"}}/>
+          <Btn small onClick={() => doTranspose(-1)}>♭↓ Transpose</Btn>
+          <Btn small onClick={() => doTranspose(1)}>♯↑ Transpose</Btn>
+          <span style={{width:1,height:20,background:"var(--border)",margin:"0 2px"}}/>
+          <Btn small onClick={clearChords}>🗑 Chords</Btn>
+          <span style={{width:1,height:20,background:"var(--border)",margin:"0 2px"}}/>
+          <Btn small variant="primary" onClick={() => { setExportMode("pdf"); setShowExport(true); }}>🖨 Print PDF</Btn>
+          <Btn small variant="blue" onClick={() => { setExportMode("docx"); setShowExport(true); }}>📄 Download DOCX</Btn>
+        </div>
+        <Btn small variant="ghost" onClick={onLogout}>← Exit</Btn>
+      </header>
+
+      <div style={{display:"flex",flex:1,overflow:"hidden",position:"relative",zIndex:1}}>
+
+        {/* ── Sidebar ── */}
+        <aside style={{width:260,background:"var(--surface)",borderRight:"1px solid var(--border)",display:"flex",flexDirection:"column",flexShrink:0,overflow:"hidden"}}>
+          <div style={{padding:"10px 12px 8px",borderBottom:"1px solid var(--border)",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+            <span style={{fontFamily:"'Cinzel',serif",fontSize:".62rem",letterSpacing:".1em",color:"var(--muted)"}}>
+              HYMNS <span style={{color:"var(--gold)",marginLeft:4}}>{hymns.length}</span>
+            </span>
+            <Btn small variant="danger" onClick={deleteHymn}>🗑</Btn>
+          </div>
+          <div style={{flex:1,overflowY:"auto",padding:7}}>
+            {hymns.map((h,i) => (
+              <div key={h.id} onClick={() => setCurrentIdx(i)}
+                style={{
+                  padding:"8px 11px", borderRadius:"var(--r)", cursor:"pointer",
+                  marginBottom:3, border:`1px solid ${i===currentIdx?"var(--gold)":"transparent"}`,
+                  background: i===currentIdx ? "#c4922a18" : "transparent",
+                  transition:"all .14s",
+                }}>
+                <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
+                  <span style={{fontFamily:"'Cinzel',serif",fontSize:".58rem",color:"var(--gold)"}}>#{h.number}</span>
+                  <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:".55rem",padding:"1px 6px",borderRadius:8,background:"var(--surface2)",border:"1px solid var(--border2)",color:"var(--muted)"}}>
+                    {h.key||"D"}
+                  </span>
+                </div>
+                <div style={{fontSize:".82rem",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{h.title}</div>
+              </div>
+            ))}
+          </div>
+          {/* Quick import */}
+          <div style={{padding:10,borderTop:"1px solid var(--border)"}}>
+            <div style={{fontFamily:"'Cinzel',serif",fontSize:".58rem",letterSpacing:".1em",color:"var(--muted)",marginBottom:5}}>QUICK JSON PASTE</div>
+            <textarea value={importText} onChange={e=>setImportText(e.target.value)}
+              placeholder='{"number":1,"title":"...","key":"D","lines":[...]}'
+              style={{width:"100%",height:72,background:"var(--bg2)",border:"1px solid var(--border)",color:"var(--cream)",padding:7,borderRadius:"var(--r)",fontSize:".68rem",fontFamily:"'JetBrains Mono',monospace",resize:"vertical",outline:"none",marginBottom:6}}/>
+            <Btn variant="primary" style={{width:"100%"}} onClick={doImport}>Import</Btn>
+          </div>
+        </aside>
+
+        {/* ── Editor Area ── */}
+        <main style={{flex:1,overflow:"hidden",display:"flex",flexDirection:"column"}}>
+
+          {/* ── Meta bar: Editable Title + Key + Number ── */}
+          <div style={{padding:"10px 20px",borderBottom:"1px solid var(--border)",display:"flex",alignItems:"center",gap:10,background:"var(--surface)",flexShrink:0}}>
+            {/* Hymn number */}
+            <div style={{display:"flex",alignItems:"center",gap:4,flexShrink:0}}>
+              <span style={{fontFamily:"'Cinzel',serif",fontSize:".62rem",color:"var(--muted)"}}>#</span>
+              <input
+                type="number"
+                value={hymn?.number || ""}
+                onChange={e => { const num = parseInt(e.target.value)||hymn.number; save({...hymn, number: num}); }}
+                style={{
+                  width:52, textAlign:"center",
+                  fontFamily:"'Cinzel',serif", fontSize:".85rem",
+                  background:"var(--bg2)", border:"1px solid var(--border2)",
+                  color:"var(--gold)", outline:"none", borderRadius:6, padding:"3px 4px",
+                }}
+              />
+            </div>
+
+            {/* Editable Title — full input, always visible */}
+            <div style={{flex:1, position:"relative"}}>
+              <input
+                value={hymn?.title || ""}
+                onChange={e => save({...hymn, title: e.target.value})}
+                placeholder="Hymn Title…"
+                style={{
+                  width:"100%",
+                  background:"var(--bg2)", border:"1.5px solid var(--border2)",
+                  color:"var(--gold2)", fontFamily:"'Cinzel',serif",
+                  fontSize:".92rem", outline:"none", borderRadius:8,
+                  padding:"6px 12px",
+                  transition:"border-color .15s",
+                }}
+                onFocus={e => e.target.style.borderColor="var(--gold)"}
+                onBlur={e => e.target.style.borderColor="var(--border2)"}
+              />
+              <span style={{
+                position:"absolute", right:10, top:"50%", transform:"translateY(-50%)",
+                fontSize:".6rem", color:"var(--muted)", pointerEvents:"none",
+                fontFamily:"'JetBrains Mono',monospace",
+              }}>✎</span>
+            </div>
+
+            {/* Editable Key */}
+            {hymn && (
+              <EditableKeyField
+                value={hymn.key || "D"}
+                onChange={newKey => save({ ...hymn, key: newKey })}
+              />
+            )}
+          </div>
+
+          {/* Chord palette */}
+          <div style={{padding:"6px 20px",background:"var(--surface)",borderBottom:"1px solid var(--border)",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",flexShrink:0}}>
+            <span style={{fontFamily:"'Cinzel',serif",fontSize:".6rem",letterSpacing:".1em",color:"var(--muted)"}}>PALETTE →</span>
+            {chips.map(ch => (
+              <span key={ch}
+                style={{fontFamily:"'JetBrains Mono',monospace",fontSize:".68rem",fontWeight:600,padding:"2px 8px",borderRadius:4,background:"var(--surface2)",border:"1px solid var(--border2)",color:"var(--gold)",cursor:"default",userSelect:"none"}}>
+                {ch}
+              </span>
+            ))}
+            <select value={palette} onChange={e=>setPalette(e.target.value)}
+              style={{background:"var(--surface2)",border:"1px solid var(--border2)",color:"var(--muted)",padding:"2px 6px",borderRadius:"var(--r)",fontSize:".68rem",fontFamily:"'JetBrains Mono',monospace",cursor:"pointer",outline:"none",marginLeft:"auto"}}>
+              <option value="standard">Standard</option>
+              <option value="minor">With minors</option>
+              <option value="extended">Extended</option>
+            </select>
+          </div>
+
+          {/* Sheet */}
+          <div style={{flex:1,overflowY:"auto",padding:"28px 40px"}}>
+            {!hymn ? (
+              <div style={{height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:12,color:"var(--muted)"}}>
+                <span style={{fontSize:"2.5rem",opacity:.25}}>🎵</span>
+                <p style={{fontSize:".82rem",textAlign:"center"}}>Import a hymn or create a new one.</p>
+              </div>
+            ) : (
+              <div style={{maxWidth:820,margin:"0 auto"}}>
+                <h2 style={{fontFamily:"'Cinzel',serif",fontSize:"1.3rem",color:"var(--gold2)",textAlign:"center",marginBottom:6,letterSpacing:".08em"}}>{hymn.title}</h2>
+                <p style={{textAlign:"center",marginBottom:24,fontFamily:"'JetBrains Mono',monospace",fontSize:".65rem",color:"var(--muted)"}}>
+                  Hymn #{hymn.number} · Key: {hymn.key||"D"}
+                </p>
+                <SheetEditor hymn={hymn} onUpdate={save}/>
+              </div>
+            )}
+          </div>
+
+          {/* Help bar */}
+          <div style={{padding:"4px 20px",background:"var(--surface)",borderTop:"1px solid var(--border)",display:"flex",gap:14,flexWrap:"wrap",fontFamily:"'JetBrains Mono',monospace",fontSize:".6rem",color:"var(--muted)",flexShrink:0}}>
+            {[["Click syllable","open chord input"],["Enter / →","next syllable"],["← ","prev syllable"],["Esc","close input"],["✎ Key","click key badge to edit"],["Title","always editable above"]].map(([k,v])=>(
+              <span key={k}><b style={{color:"var(--gold)"}}>{k}</b> — {v}</span>
+            ))}
+          </div>
+        </main>
+      </div>
+
+      {/* Modals */}
+      <Modal open={showImport} onClose={() => setShowImport(false)} title="📥 Import Hymn JSON"
+        footer={<><Btn onClick={() => setShowImport(false)}>Cancel</Btn><Btn variant="primary" onClick={doImport}>Import</Btn></>}>
+        <p style={{fontSize:".72rem",color:"var(--muted)",marginBottom:10}}>
+          Paste a single hymn or an array. <b style={{color:"var(--gold2)"}}>Same number + same key</b> = duplicate prompt. <b style={{color:"var(--gold2)"}}>Different key</b> = new entry.
+        </p>
+        <textarea value={importText} onChange={e=>setImportText(e.target.value)}
+          style={{width:"100%",height:200,background:"var(--bg2)",border:"1px solid var(--border)",color:"var(--cream)",padding:10,borderRadius:"var(--r)",fontSize:".72rem",fontFamily:"'JetBrains Mono',monospace",outline:"none",resize:"vertical"}}/>
+      </Modal>
+
+      {/* Duplicate modal */}
+      {dupQueue.length > 0 && dupQueueIdx < dupQueue.length && (() => {
+        const { incoming, existingIdx } = dupQueue[dupQueueIdx];
+        const existing = hymns[existingIdx];
+        return (
+          <Modal open={true} onClose={() => {}} title="⚠ Duplicate — Same Number & Key"
+            footer={
+              <div style={{display:"flex",gap:8,justifyContent:"flex-end",flexWrap:"wrap"}}>
+                <Btn variant="danger" onClick={() => resolveDup("delete")}>🗑 Skip</Btn>
+                <Btn onClick={() => resolveDup("keep_both")}>📋 Keep Both</Btn>
+                <Btn variant="primary" onClick={() => resolveDup("replace")}>🔄 Replace</Btn>
+              </div>
+            }>
+            <p style={{fontSize:".75rem",color:"var(--muted)",marginBottom:14}}>
+              {dupQueueIdx+1} of {dupQueue.length}
+            </p>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+              <div style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:"var(--r)",padding:12}}>
+                <div style={{fontFamily:"'Cinzel',serif",fontSize:".6rem",color:"var(--muted)",marginBottom:6}}>EXISTING</div>
+                <div style={{color:"var(--gold2)",fontSize:".82rem",fontWeight:600}}>#{existing.number} {existing.title}</div>
+                <div style={{color:"var(--muted)",fontSize:".7rem",marginTop:4}}>Key: {existing.key}</div>
+              </div>
+              <div style={{background:"var(--bg2)",border:"1px solid var(--gold)",borderRadius:"var(--r)",padding:12}}>
+                <div style={{fontFamily:"'Cinzel',serif",fontSize:".6rem",color:"var(--gold)",marginBottom:6}}>INCOMING</div>
+                <div style={{color:"var(--gold2)",fontSize:".82rem",fontWeight:600}}>#{incoming.number} {incoming.title}</div>
+                <div style={{color:"var(--muted)",fontSize:".7rem",marginTop:4}}>Key: {incoming.key}</div>
+              </div>
+            </div>
+          </Modal>
+        );
+      })()}
+
+      <ExportModal open={showExport} onClose={() => setShowExport(false)} hymns={hymns} currentIdx={currentIdx} mode={exportMode}/>
+
+      <Modal open={showSettings} onClose={() => setShowSettings(false)} title="⚙ Settings"
+        footer={<Btn variant="primary" onClick={() => setShowSettings(false)}>Done</Btn>}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 0",borderBottom:"1px solid var(--border)"}}>
+          <span style={{fontSize:".85rem"}}>Editor Lyric Font Size</span>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <input type="range" min={12} max={30} value={lyricFontSize} onChange={e=>setLyricFontSize(+e.target.value)} style={{accentColor:"var(--gold)"}}/>
+            <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:".7rem",color:"var(--gold2)",minWidth:20}}>{lyricFontSize}</span>
+          </div>
+        </div>
+      </Modal>
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+//  USER — KEY SELECTION MODAL
+// ─────────────────────────────────────────────────────────────
+const KeySelectionModal = ({ open, onClose, hymnNumber, hymnTitle, availableHymns, onSelect }) => {
+  if (!open) return null;
+  return (
+    <Modal open={open} onClose={onClose} title={`🎵 Select Key — Hymn #${hymnNumber}`}>
+      <p style={{fontSize:".8rem",color:"var(--cream2)",marginBottom:6,fontFamily:"'Crimson Pro',serif",fontStyle:"italic"}}>{hymnTitle}</p>
+      <p style={{fontSize:".7rem",color:"var(--muted)",marginBottom:18}}>
+        This hymn is available in multiple keys. Choose the key your church plays in:
+      </p>
+      <div style={{display:"flex",flexWrap:"wrap",gap:10,justifyContent:"center"}}>
+        {availableHymns.map(h => (
+          <button key={h.id} onClick={() => { onSelect(h); onClose(); }}
+            style={{
+              fontFamily:"'JetBrains Mono',monospace", fontWeight:700,
+              fontSize:"1.2rem", padding:"16px 32px", borderRadius:12,
+              border:"1.5px solid var(--border2)", background:"var(--surface2)",
+              color:"var(--gold2)", cursor:"pointer", transition:"all .15s",
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background="#c4922a22"; e.currentTarget.style.borderColor="var(--gold)"; }}
+            onMouseLeave={e => { e.currentTarget.style.background="var(--surface2)"; e.currentTarget.style.borderColor="var(--border2)"; }}>
+            {h.key || "D"}
+          </button>
+        ))}
+      </div>
+      <p style={{textAlign:"center",fontSize:".65rem",color:"var(--muted)",marginTop:16}}>
+        {availableHymns.length} key{availableHymns.length!==1?"s":""} available
+      </p>
+    </Modal>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+//  USER — HYMN SLIDE VIEWER
+// ─────────────────────────────────────────────────────────────
+const HymnSlideViewer = ({ hymns, initialHymnId, onBack }) => {
+  const idx = hymns.findIndex(h=>h.id===initialHymnId);
+  const [current, setCurrent] = useState(idx >= 0 ? idx : 0);
+  const [dir, setDir] = useState(1);
+  const [animKey, setAnimKey] = useState(0);
+
+  const go = (d) => {
+    const next = current + d;
+    if (next < 0 || next >= hymns.length) return;
+    setDir(d); setCurrent(next); setAnimKey(k=>k+1);
+  };
+
+  const hymn = ensureChords(hymns[current]);
+  if (!hymn) return null;
+
+  return (
+    <div style={{minHeight:"100vh",background:"var(--bg)",display:"flex",flexDirection:"column",position:"relative"}}>
+      <div className="cross-bg"/>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 20px",background:"var(--surface)",borderBottom:"1px solid var(--border)",flexShrink:0,zIndex:10}}>
+        <Btn small onClick={onBack} variant="ghost">← Back</Btn>
+        <span style={{fontFamily:"'Cinzel',serif",fontSize:".75rem",color:"var(--gold2)",letterSpacing:".08em"}}>{hymn.number}. {hymn.title}</span>
+        <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:".65rem",padding:"2px 9px",borderRadius:20,background:"#c4922a22",border:"1px solid var(--gold)",color:"var(--gold2)"}}>Key: {hymn.key||"D"}</span>
+      </div>
+      <div key={animKey} style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",padding:"40px 32px",overflowY:"auto",animation:`${dir>0?"slideInR":"slideInL"} .35s ease`}}>
+        <div style={{maxWidth:860,width:"100%"}}>
+          <h2 style={{fontFamily:"'Cinzel',serif",fontSize:"1.6rem",color:"var(--gold2)",textAlign:"center",marginBottom:12,letterSpacing:".08em"}}>{hymn.title}</h2>
+          <p style={{textAlign:"center",fontFamily:"'JetBrains Mono',monospace",fontSize:".68rem",color:"var(--muted)",marginBottom:28}}>Key: {hymn.key||"D"}</p>
+          <HymnViewer hymn={hymn} lyricSize={22} chordSize={15} lineGap={20}/>
+        </div>
+      </div>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"14px 28px",background:"var(--surface)",borderTop:"1px solid var(--border)",flexShrink:0}}>
+        <Btn onClick={() => go(-1)} disabled={current===0} variant={current===0?"ghost":"default"} style={{minWidth:100}}>← Prev</Btn>
+        <div style={{display:"flex",gap:6,alignItems:"center"}}>
+          {hymns.map((_,i) => (
+            <div key={i} onClick={() => { setDir(i>current?1:-1); setCurrent(i); setAnimKey(k=>k+1); }}
+              style={{width:i===current?22:8,height:8,borderRadius:4,cursor:"pointer",transition:"all .25s",background:i===current?"var(--gold)":"var(--border2)"}}/>
+          ))}
+        </div>
+        <Btn onClick={() => go(1)} disabled={current===hymns.length-1} variant={current===hymns.length-1?"ghost":"primary"} style={{minWidth:100}}>Next →</Btn>
+      </div>
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+//  USER — FLOW EDITOR
+// ─────────────────────────────────────────────────────────────
+const FlowEditor = ({ flow, hymns, onSave, onClose }) => {
+  const [name, setName] = useState(flow.name);
+  const [items, setItems] = useState([...flow.hymnIds]);
+  const [dragIdx, setDragIdx] = useState(null);
+  const [overIdx, setOverIdx] = useState(null);
+  const [showPicker, setShowPicker] = useState(false);
+  const [pendingGroup, setPendingGroup] = useState(null);
+  const [showKeyModal, setShowKeyModal] = useState(false);
+
+  const hymnById = Object.fromEntries(hymns.map(h=>[h.id,h]));
+  const hymnGroups = {};
+  hymns.forEach(h => { if (!hymnGroups[h.number]) hymnGroups[h.number] = []; hymnGroups[h.number].push(h); });
+  const uniqueNumbers = Object.keys(hymnGroups).map(Number).sort((a,b)=>a-b);
+
+  const onDragStart = (i) => setDragIdx(i);
+  const onDragOver = (e, i) => { e.preventDefault(); setOverIdx(i); };
+  const onDrop = (e, i) => {
+    e.preventDefault();
+    if (dragIdx===null||dragIdx===i) { setDragIdx(null); setOverIdx(null); return; }
+    const next = [...items]; const [moved] = next.splice(dragIdx,1); next.splice(i,0,moved);
+    setItems(next); setDragIdx(null); setOverIdx(null);
+  };
+  const onDragEnd = () => { setDragIdx(null); setOverIdx(null); };
+  const remove = (i) => setItems(it=>it.filter((_,idx)=>idx!==i));
+
+  const handlePickerSelect = (num) => {
+    const group = hymnGroups[num];
+    if (!group) return;
+    if (group.length === 1) {
+      if (!items.includes(group[0].id)) setItems(it=>[...it,group[0].id]);
+      setShowPicker(false);
+    } else {
+      setPendingGroup({number:num,title:group[0].title,hymns:group});
+      setShowPicker(false); setShowKeyModal(true);
+    }
+  };
+
+  const handleKeySelected = (h) => {
+    if (!items.includes(h.id)) setItems(it=>[...it,h.id]);
+    setPendingGroup(null); setShowKeyModal(false);
+  };
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",height:"100vh",background:"var(--bg)"}}>
+      <div className="cross-bg"/>
+      <div style={{display:"flex",alignItems:"center",gap:12,padding:"12px 20px",background:"var(--surface)",borderBottom:"1px solid var(--border)",zIndex:10}}>
+        <Btn small onClick={onClose} variant="ghost">← Back</Btn>
+        <input value={name} onChange={e=>setName(e.target.value)}
+          style={{flex:1,background:"transparent",border:"none",color:"var(--gold2)",fontFamily:"'Cinzel',serif",fontSize:"1rem",outline:"none"}} placeholder="Flow Name…"/>
+        <Btn small variant="green" onClick={() => onSave({...flow,name,hymnIds:items})}>💾 Save</Btn>
+      </div>
+      <div style={{flex:1,overflowY:"auto",padding:"24px 32px",position:"relative",zIndex:1}}>
+        <div style={{maxWidth:600,margin:"0 auto"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+            <h2 style={{fontFamily:"'Cinzel',serif",fontSize:"1rem",color:"var(--gold2)"}}>Flow — {items.length} hymn{items.length!==1?"s":""}</h2>
+            <Btn small variant="primary" onClick={() => setShowPicker(true)}>＋ Add Hymn</Btn>
+          </div>
+          {items.length===0&&<div style={{textAlign:"center",padding:"60px 0",color:"var(--muted)"}}>
+            <div style={{fontSize:"2rem",opacity:.3,marginBottom:12}}>🎵</div>
+            <p>No hymns yet — click "+ Add Hymn"</p>
+          </div>}
+          {items.map((id,i)=>{
+            const h=hymnById[id]; if(!h) return null;
+            const isDragging=dragIdx===i, isOver=overIdx===i&&dragIdx!==null&&dragIdx!==i;
+            return (
+              <div key={`${id}-${i}`} draggable onDragStart={()=>onDragStart(i)} onDragOver={e=>onDragOver(e,i)} onDrop={e=>onDrop(e,i)} onDragEnd={onDragEnd}
+                style={{display:"flex",alignItems:"center",gap:12,padding:"12px 16px",borderRadius:"var(--r)",marginBottom:8,background:isDragging?"var(--surface3)":"var(--surface)",border:`2px solid ${isOver?"var(--gold)":isDragging?"var(--gold)":"var(--border)"}`,opacity:isDragging?.55:1,cursor:"grab"}}>
+                <span className="drag-handle" style={{fontSize:"1.1rem",color:"var(--muted)"}}>⠿</span>
+                <span style={{fontFamily:"'Cinzel',serif",fontSize:".65rem",color:"var(--gold)",background:"var(--surface2)",border:"1px solid var(--border2)",borderRadius:20,padding:"2px 8px",minWidth:36,textAlign:"center",flexShrink:0}}>#{h.number}</span>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:".9rem",color:"var(--cream)"}}>{h.title}</div>
+                  <div style={{fontFamily:"'JetBrains Mono',monospace",fontSize:".6rem",color:"var(--gold2)",marginTop:2}}>Key: {h.key||"D"}</div>
+                </div>
+                <Btn small variant="danger" onClick={()=>remove(i)}>✕</Btn>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      {showPicker&&(
+        <div onClick={e=>e.target===e.currentTarget&&setShowPicker(false)}
+          style={{position:"fixed",inset:0,background:"#000a",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:200}}>
+          <div style={{background:"var(--surface)",borderTop:"1px solid var(--border2)",borderRadius:"14px 14px 0 0",width:"100%",maxWidth:600,maxHeight:"60vh",display:"flex",flexDirection:"column",boxShadow:"0 -12px 40px #0008"}}>
+            <div style={{padding:"14px 20px",borderBottom:"1px solid var(--border)",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{fontFamily:"'Cinzel',serif",fontSize:".8rem",color:"var(--gold2)"}}>Select Hymn</span>
+              <Btn small onClick={()=>setShowPicker(false)} variant="ghost">✕</Btn>
+            </div>
+            <div style={{overflowY:"auto",padding:12}}>
+              {uniqueNumbers.map(num=>{
+                const group=hymnGroups[num], firstHymn=group[0];
+                const keysAvailable=group.map(h=>h.key||"D");
+                const alreadyAdded=group.some(h=>items.includes(h.id));
+                return (
+                  <div key={num} onClick={()=>!alreadyAdded&&handlePickerSelect(num)}
+                    style={{display:"flex",alignItems:"center",gap:12,padding:"10px 14px",borderRadius:"var(--r)",marginBottom:6,cursor:alreadyAdded?"not-allowed":"pointer",background:alreadyAdded?"var(--surface2)":"var(--surface)",border:`1px solid ${alreadyAdded?"var(--border)":"var(--border2)"}`,opacity:alreadyAdded?.5:1}}>
+                    <span style={{fontFamily:"'Cinzel',serif",fontSize:".62rem",color:"var(--gold)",minWidth:36}}>#{num}</span>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:".88rem",marginBottom:3}}>{firstHymn.title}</div>
+                      <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                        {keysAvailable.map(k=><span key={k} style={{fontFamily:"'JetBrains Mono',monospace",fontSize:".55rem",padding:"1px 6px",borderRadius:8,background:"var(--bg2)",border:"1px solid var(--border2)",color:"var(--gold2)"}}>{k}</span>)}
+                      </div>
+                    </div>
+                    {group.length>1&&<span style={{fontSize:".65rem",color:"var(--muted)",whiteSpace:"nowrap"}}>{group.length} keys →</span>}
+                    {alreadyAdded&&<span style={{fontSize:".65rem",color:"var(--muted)"}}>✓</span>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+      {pendingGroup&&<KeySelectionModal open={showKeyModal} onClose={()=>{setShowKeyModal(false);setPendingGroup(null);setShowPicker(true);}} hymnNumber={pendingGroup.number} hymnTitle={pendingGroup.title} availableHymns={pendingGroup.hymns} onSelect={handleKeySelected}/>}
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+//  USER — FLOW LIST PAGE
+// ─────────────────────────────────────────────────────────────
+const FlowsPage = ({ hymns, flows, setFlows, onStartFlow, onBack }) => {
+  const [editFlow, setEditFlow] = useState(null);
+  const newFlow = () => { const f={id:uid(),name:"New Flow",hymnIds:[],createdAt:Date.now()}; const next=[...flows,f]; setFlows(next); saveStorage("csiFlows",next); setEditFlow(f); };
+  const saveFlow = (updated) => { const next=flows.map(f=>f.id===updated.id?updated:f); setFlows(next); saveStorage("csiFlows",next); setEditFlow(null); };
+  const deleteFlow = (id) => { if(!confirm("Delete this flow?")) return; const next=flows.filter(f=>f.id!==id); setFlows(next); saveStorage("csiFlows",next); };
+  if (editFlow) return <FlowEditor flow={editFlow} hymns={hymns} onSave={saveFlow} onClose={()=>setEditFlow(null)}/>;
+  const hymnById = Object.fromEntries(hymns.map(h=>[h.id,h]));
+  return (
+    <div style={{minHeight:"100vh",background:"var(--bg)",display:"flex",flexDirection:"column"}}>
+      <div className="cross-bg"/>
+      <div style={{display:"flex",alignItems:"center",gap:12,padding:"12px 20px",background:"var(--surface)",borderBottom:"1px solid var(--border)",zIndex:10}}>
+        <Btn small onClick={onBack} variant="ghost">← Back</Btn>
+        <h1 style={{fontFamily:"'Cinzel',serif",fontSize:"1rem",color:"var(--gold2)",flex:1}}>✝ My Service Flows</h1>
+        <Btn small variant="primary" onClick={newFlow}>＋ New Flow</Btn>
+      </div>
+      <div style={{flex:1,overflowY:"auto",padding:"28px",position:"relative",zIndex:1}}>
+        {flows.length===0?(
+          <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"50vh",gap:16,color:"var(--muted)"}}>
+            <div style={{fontSize:"3rem",opacity:.25}}>🙏</div>
+            <p style={{textAlign:"center",fontSize:".9rem"}}>No flows yet. Create one to organize hymns.</p>
+            <Btn variant="primary" onClick={newFlow}>＋ Create Flow</Btn>
+          </div>
+        ):(
+          <div style={{maxWidth:700,margin:"0 auto",display:"grid",gap:14}}>
+            {flows.map(f=>{
+              const hymnList=f.hymnIds.map(id=>hymnById[id]).filter(Boolean);
+              return (
+                <div key={f.id} style={{background:"var(--surface)",border:"1px solid var(--border)",borderRadius:"var(--r)",overflow:"hidden"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:12,padding:"14px 18px",borderBottom:"1px solid var(--border)"}}>
+                    <div style={{flex:1}}>
+                      <div style={{fontFamily:"'Cinzel',serif",fontSize:".92rem",color:"var(--gold2)",marginBottom:3}}>{f.name}</div>
+                      <div style={{fontFamily:"'JetBrains Mono',monospace",fontSize:".62rem",color:"var(--muted)"}}>{f.hymnIds.length} hymn{f.hymnIds.length!==1?"s":""}</div>
+                    </div>
+                    <Btn small onClick={()=>setEditFlow(f)}>✏ Edit</Btn>
+                    <Btn small variant="primary" onClick={()=>onStartFlow(f)} disabled={f.hymnIds.length===0}>▶ Start</Btn>
+                    <Btn small variant="danger" onClick={()=>deleteFlow(f.id)}>🗑</Btn>
+                  </div>
+                  {hymnList.length>0&&<div style={{padding:"10px 18px",display:"flex",flexWrap:"wrap",gap:6}}>
+                    {hymnList.map(h=>(
+                      <span key={h.id} style={{display:"inline-flex",alignItems:"center",gap:5,fontFamily:"'Crimson Pro',serif",fontSize:".8rem",background:"var(--surface2)",border:"1px solid var(--border2)",borderRadius:20,padding:"2px 10px",color:"var(--cream2)"}}>
+                        <span style={{fontFamily:"'Cinzel',serif",fontSize:".58rem",color:"var(--gold)"}}>#{h.number}</span>{h.title}
+                        <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:".52rem",color:"var(--muted)"}}>{h.key||"D"}</span>
+                      </span>
+                    ))}
+                  </div>}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+//  USER — FLOW SLIDE VIEWER
+// ─────────────────────────────────────────────────────────────
+const FlowSlideViewer = ({ flow, hymns, onBack }) => {
+  const hymnById = Object.fromEntries(hymns.map(h=>[h.id,h]));
+  const flowHymns = flow.hymnIds.map(id=>hymnById[id]).filter(Boolean);
+  const [current, setCurrent] = useState(0);
+  const [dir, setDir] = useState(1);
+  const [animKey, setAnimKey] = useState(0);
+  const go = (d) => { const next=current+d; if(next<0||next>=flowHymns.length) return; setDir(d); setCurrent(next); setAnimKey(k=>k+1); };
+  const hymn = ensureChords(flowHymns[current]);
+  if (!hymn) return <div style={{color:"var(--cream)",padding:40}}>Flow is empty.</div>;
+  return (
+    <div style={{minHeight:"100vh",background:"var(--bg)",display:"flex",flexDirection:"column",position:"relative"}}>
+      <div className="cross-bg"/>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 20px",background:"var(--surface)",borderBottom:"1px solid var(--border)",zIndex:10,flexShrink:0}}>
+        <Btn small onClick={onBack} variant="ghost">← Back</Btn>
+        <div style={{textAlign:"center"}}>
+          <div style={{fontFamily:"'Cinzel',serif",fontSize:".7rem",color:"var(--muted)"}}>{flow.name}</div>
+          <div style={{fontFamily:"'Cinzel',serif",fontSize:".82rem",color:"var(--gold2)"}}>{hymn.number}. {hymn.title}</div>
+        </div>
+        <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:".65rem",padding:"2px 9px",borderRadius:20,background:"#c4922a22",border:"1px solid var(--gold)",color:"var(--gold2)"}}>{current+1}/{flowHymns.length}</span>
+      </div>
+      <div key={animKey} style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",padding:"40px 32px",overflowY:"auto",animation:`${dir>0?"slideInR":"slideInL"} .35s ease`}}>
+        <div style={{maxWidth:860,width:"100%"}}>
+          <h2 style={{fontFamily:"'Cinzel',serif",fontSize:"1.6rem",color:"var(--gold2)",textAlign:"center",marginBottom:10}}>{hymn.title}</h2>
+          <p style={{textAlign:"center",fontFamily:"'JetBrains Mono',monospace",fontSize:".68rem",color:"var(--muted)",marginBottom:32}}>Key: {hymn.key||"D"}</p>
+          <HymnViewer hymn={hymn} lyricSize={22} chordSize={15} lineGap={20}/>
+        </div>
+      </div>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"14px 28px",background:"var(--surface)",borderTop:"1px solid var(--border)",flexShrink:0}}>
+        <Btn onClick={()=>go(-1)} disabled={current===0} variant={current===0?"ghost":"default"} style={{minWidth:110}}>← Previous</Btn>
+        <div style={{display:"flex",gap:5,flexWrap:"wrap",justifyContent:"center",maxWidth:"50%"}}>
+          {flowHymns.map((h,i)=>(
+            <div key={`${h.id}-${i}`} onClick={()=>{setDir(i>current?1:-1);setCurrent(i);setAnimKey(k=>k+1);}} title={`${h.number}. ${h.title} (${h.key||"D"})`}
+              style={{width:i===current?24:8,height:8,borderRadius:4,cursor:"pointer",transition:"all .25s",background:i===current?"var(--gold)":"var(--border2)",flexShrink:0}}/>
+          ))}
+        </div>
+        <Btn onClick={()=>go(1)} disabled={current===flowHymns.length-1} variant={current===flowHymns.length-1?"ghost":"primary"} style={{minWidth:110}}>
+          {current===flowHymns.length-1?"🙏 Finished":"Next →"}
+        </Btn>
+      </div>
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+//  USER — HYMN BROWSER  (grouped by number, key selector)
+// ─────────────────────────────────────────────────────────────
+const UserDashboard = ({ hymns, onLogout }) => {
+  const [flows, setFlows] = useState(() => loadStorage("csiFlows", []));
+  const [page, setPage] = useState("home");
+  const [viewHymnId, setViewHymnId] = useState(null);
+  const [activeFlow, setActiveFlow] = useState(null);
+  const [search, setSearch] = useState("");
+  const [keyModalData, setKeyModalData] = useState(null);
+  const [showKeyModal, setShowKeyModal] = useState(false);
+
+  const hymnGroups = {};
+  hymns.forEach(h => { if (!hymnGroups[h.number]) hymnGroups[h.number] = []; hymnGroups[h.number].push(h); });
+  const groupedList = Object.values(hymnGroups)
+    .sort((a,b) => a[0].number - b[0].number)
+    .filter(group => { if (!search) return true; const q=search.toLowerCase(); return group[0].title.toLowerCase().includes(q)||String(group[0].number).includes(q); });
+
+  const handleHymnClick = (group) => {
+    if (group.length===1) { setViewHymnId(group[0].id); setPage("slide"); }
+    else { setKeyModalData({number:group[0].number,title:group[0].title,hymns:group}); setShowKeyModal(true); }
+  };
+  const handleKeySelected = (h) => { setViewHymnId(h.id); setShowKeyModal(false); setKeyModalData(null); setPage("slide"); };
+
+  if (page==="slide") return <HymnSlideViewer hymns={hymns} initialHymnId={viewHymnId} onBack={()=>setPage("hymns")}/>;
+  if (page==="flows") return <FlowsPage hymns={hymns} flows={flows} setFlows={setFlows} onStartFlow={f=>{setActiveFlow(f);setPage("flowSlide");}} onBack={()=>setPage("home")}/>;
+  if (page==="flowSlide") return <FlowSlideViewer flow={activeFlow} hymns={hymns} onBack={()=>setPage("flows")}/>;
+
+  return (
+    <div style={{minHeight:"100vh",background:"var(--bg)",display:"flex",flexDirection:"column"}}>
+      <div className="cross-bg"/>
+      <header style={{background:"var(--surface)",borderBottom:"1px solid var(--border)",padding:"0 20px",height:54,display:"flex",alignItems:"center",gap:14,flexShrink:0,boxShadow:"0 2px 20px #0008",zIndex:10,position:"sticky",top:0}}>
+        <span style={{fontFamily:"'Cinzel',serif",fontSize:".95rem",fontWeight:900,color:"var(--gold2)",letterSpacing:".08em"}}>✝ CSI HYMNS</span>
+        <nav style={{display:"flex",gap:4,flex:1}}>
+          {[["home","🏠 Home"],["hymns","🎵 Hymns"],["flows","📋 Flows"]].map(([p,label])=>(
+            <button key={p} onClick={()=>setPage(p)} style={{background:page===p?"var(--gold)":"transparent",border:`1px solid ${page===p?"var(--gold)":"transparent"}`,color:page===p?"#000":"var(--muted)",fontFamily:"'JetBrains Mono',monospace",fontSize:".7rem",fontWeight:600,padding:"4px 12px",borderRadius:"var(--r)",cursor:"pointer",transition:"all .15s"}}>{label}</button>
+          ))}
+        </nav>
+        <Btn small variant="ghost" onClick={onLogout}>← Exit</Btn>
+      </header>
+
+      {page==="home"&&(
+        <div style={{flex:1,overflowY:"auto",position:"relative",zIndex:1}}>
+          <div style={{padding:"60px 24px 48px",textAlign:"center",background:"linear-gradient(to bottom,var(--surface) 0%,transparent 100%)"}}>
+            <div style={{fontSize:"3rem",marginBottom:12,animation:"glow 3s infinite"}}>✝</div>
+            <h1 style={{fontFamily:"'Cinzel',serif",fontSize:"2rem",fontWeight:900,color:"var(--gold2)",letterSpacing:".1em",marginBottom:8}}>Praise &amp; Worship</h1>
+            <p style={{color:"var(--muted)",fontSize:"1rem",fontFamily:"'Crimson Pro',serif",fontStyle:"italic"}}>Church of South India — Sacred Hymns &amp; Chords</p>
+          </div>
+          <div style={{display:"flex",gap:16,padding:"0 28px 40px",flexWrap:"wrap",maxWidth:700,margin:"0 auto",justifyContent:"center"}}>
+            {[
+              {icon:"🎵",title:"Browse Hymns",sub:`${Object.keys(hymnGroups).length} hymns · ${hymns.length} versions`,action:()=>setPage("hymns"),color:"var(--gold)"},
+              {icon:"📋",title:"Service Flows",sub:`${flows.length} flow${flows.length!==1?"s":""} saved`,action:()=>setPage("flows"),color:"var(--blue2)"},
+            ].map(card=>(
+              <div key={card.title} onClick={card.action} style={{flex:"1 1 240px",padding:"28px 24px",borderRadius:14,cursor:"pointer",background:"var(--surface)",border:"1px solid var(--border)",transition:"all .2s",textAlign:"center",boxShadow:"0 8px 30px #0005"}}>
+                <div style={{fontSize:"2.5rem",marginBottom:12}}>{card.icon}</div>
+                <div style={{fontFamily:"'Cinzel',serif",fontSize:"1rem",color:card.color,marginBottom:6}}>{card.title}</div>
+                <div style={{fontSize:".8rem",color:"var(--muted)"}}>{card.sub}</div>
+              </div>
+            ))}
+          </div>
+          {flows.length>0&&<div style={{maxWidth:700,margin:"0 auto",padding:"0 28px 40px"}}>
+            <h2 style={{fontFamily:"'Cinzel',serif",fontSize:".75rem",letterSpacing:".1em",color:"var(--muted)",marginBottom:14}}>RECENT FLOWS</h2>
+            {flows.slice(0,3).map(f=>(
+              <div key={f.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 16px",background:"var(--surface)",border:"1px solid var(--border)",borderRadius:"var(--r)",cursor:"pointer",marginBottom:8}} onClick={()=>{setActiveFlow(f);setPage("flowSlide");}}>
+                <div>
+                  <div style={{fontFamily:"'Cinzel',serif",fontSize:".85rem",color:"var(--gold2)"}}>{f.name}</div>
+                  <div style={{fontFamily:"'JetBrains Mono',monospace",fontSize:".6rem",color:"var(--muted)",marginTop:2}}>{f.hymnIds.length} hymns</div>
+                </div>
+                <span style={{fontSize:".75rem",color:"var(--gold)"}}>▶ Start →</span>
+              </div>
+            ))}
+          </div>}
+        </div>
+      )}
+
+      {page==="hymns"&&(
+        <div style={{flex:1,overflowY:"auto",padding:"24px",position:"relative",zIndex:1}}>
+          <div style={{maxWidth:700,margin:"0 auto"}}>
+            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search hymns by name or number…"
+              style={{width:"100%",background:"var(--surface)",border:"1px solid var(--border2)",color:"var(--cream)",padding:"9px 14px",borderRadius:"var(--r)",fontFamily:"'Crimson Pro',serif",fontSize:"1rem",outline:"none",marginBottom:20}}/>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {groupedList.map(group=>{
+                const rep=group[0], keys=group.map(h=>h.key||"D"), multi=group.length>1;
+                return (
+                  <div key={rep.number} onClick={()=>handleHymnClick(group)}
+                    style={{display:"flex",alignItems:"center",gap:14,padding:"14px 18px",background:"var(--surface)",border:"1px solid var(--border)",borderRadius:"var(--r)",cursor:"pointer",transition:"all .15s"}}>
+                    <span style={{fontFamily:"'Cinzel',serif",fontSize:".68rem",color:"var(--gold)",background:"var(--surface2)",border:"1px solid var(--border2)",borderRadius:20,padding:"3px 10px",flexShrink:0,minWidth:44,textAlign:"center"}}>#{rep.number}</span>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:"1rem",color:"var(--cream)",fontFamily:"'Crimson Pro',serif",marginBottom:5}}>{rep.title}</div>
+                      <div style={{display:"flex",gap:5,flexWrap:"wrap",alignItems:"center"}}>
+                        {keys.map((k,ki)=><span key={ki} style={{fontFamily:"'JetBrains Mono',monospace",fontSize:".58rem",fontWeight:700,padding:"2px 8px",borderRadius:8,background:"var(--bg2)",border:"1px solid var(--border2)",color:"var(--gold2)"}}>{k}</span>)}
+                        {multi&&<span style={{fontSize:".6rem",color:"var(--muted)",fontFamily:"'Cinzel',serif"}}>· tap to choose</span>}
+                      </div>
+                    </div>
+                    <span style={{color:"var(--muted)",fontSize:".8rem"}}>→</span>
+                  </div>
+                );
+              })}
+              {groupedList.length===0&&<div style={{textAlign:"center",padding:"48px 0",color:"var(--muted)"}}><div style={{fontSize:"2rem",opacity:.25,marginBottom:10}}>🔍</div><p>No hymns found for "{search}"</p></div>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {keyModalData&&<KeySelectionModal open={showKeyModal} onClose={()=>{setShowKeyModal(false);setKeyModalData(null);}} hymnNumber={keyModalData.number} hymnTitle={keyModalData.title} availableHymns={keyModalData.hymns} onSelect={handleKeySelected}/>}
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+//  ROOT APP
+// ─────────────────────────────────────────────────────────────
+export default function App() {
+  injectStyles();
+
+  const [hymns, setHymns] = useState(() => {
+    const stored = loadStorage("csiHymns", null);
+    if (stored && stored.length > 0) return sortHymns(stored.map(ensureChords));
+    const d = ensureChords({ ...DEMO_HYMN });
+    saveStorage("csiHymns", [d]);
+    return [d];
+  });
+
+  const [role, setRole] = useState(null);
+
+  if (!role) return <LoginScreen onLogin={setRole}/>;
+  if (role === "admin") return <AdminDashboard hymns={hymns} setHymns={setHymns} onLogout={() => setRole(null)}/>;
+  return <UserDashboard hymns={hymns} onLogout={() => setRole(null)}/>;
+}
