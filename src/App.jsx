@@ -253,10 +253,11 @@ function saveStorage(key, val) {
 //  PDF EXPORT
 // ─────────────────────────────────────────────────────────────
 function buildPrintHTML(hymns_, indices, lyricSize, chordSize, lineGap) {
+  const titleSize = Math.round(lyricSize * 0.85);
+  const chordH = Math.round(chordSize * 2.2);
+
   const buildHymn = (h) => {
     const safe = ensureChords(h);
-    const titleSize = Math.round(lyricSize * 0.85);
-    const chordH = Math.round(chordSize * 2.2);
     const wordGap = Math.round(lyricSize * 1.1);
     let html = `<div class="hymn-block">`;
     html += `<div class="hymn-title">${safe.number}. ${safe.title} <span class="hymn-key">(Key: ${safe.key||"D"})</span></div>`;
@@ -1547,7 +1548,7 @@ const UserDashboard = ({ hymns, onLogout }) => {
 
 // ─────────────────────────────────────────────────────────────
 //  ROOT APP
-// ─────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────── 
 export default function App() {
   injectStyles();
   const [hymns, setHymns] = useState(() => {
